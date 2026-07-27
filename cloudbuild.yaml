@@ -263,13 +263,16 @@ steps:
       --region=$_REGION \
       --project=$PROJECT_ID \
       --format="value(config.serviceAccount)" | sort -u | while read sa; do
-        echo "Granting artifactregistry.reader to $sa"
-        gcloud projects add-iam-policy-binding $PROJECT_ID \
+        echo "Granting artifactregistry.reader on the gcr.io repository to $sa"
+        # Scoped to the single repository holding the frontend image rather than the whole
+        # project, so the node pool can pull that image and nothing else.
+        gcloud artifacts repositories add-iam-policy-binding gcr.io \
+          --location=us \
+          --project=$PROJECT_ID \
           --member="serviceAccount:${sa}" \
-          --role="roles/artifactregistry.reader" \
-          --condition=None
+          --role="roles/artifactregistry.reader"
     done
-  allowFailure: true
+  allowFailure: false
   waitFor: ['create gke cluster']
 
 - id: 'build frontend image'

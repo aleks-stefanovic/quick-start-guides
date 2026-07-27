@@ -1,0 +1,42 @@
+# Keep the build context (and the resulting image) limited to application code.
+# The final stage copies this directory wholesale, so anything not excluded here ships.
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Docs and build metadata that the runtime does not need
+Dockerfile
+.dockerignore
+README.md
+
+# Editor, OS and VCS noise
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Test and log artifacts
+tests/
+test_*.py
+*_test.py
+*.log
