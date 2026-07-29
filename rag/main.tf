@@ -75,12 +75,11 @@ module "infra" {
   subnetwork_name   = local.network_name
   subnetwork_cidr   = var.subnetwork_cidr
   subnetwork_region = local.cluster_location_region
-  cpu_pools          = var.cpu_pools
-  enable_gpu         = true
-  gpu_pools          = var.gpu_pools
-  ray_addon_enabled  = true
-  kubernetes_version = var.kubernetes_version
-  depends_on         = [module.project-services]
+  cpu_pools         = var.cpu_pools
+  enable_gpu        = true
+  gpu_pools         = var.gpu_pools
+  ray_addon_enabled = true
+  depends_on        = [module.project-services]
 }
 
 data "google_container_cluster" "default" {

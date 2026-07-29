@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-project_id      = "<your project ID>"
+project_id = "<your project ID>"
 
 # RAG Frontend image — build and push before running terraform apply.
 #
@@ -36,12 +36,11 @@ create_network  = true         # Creates a new VPC for your cluster. Disable to 
 network_name    = "ml-network" # Creates a network named ml-network by default. If using an existing VPC, ensure you follow the README instructions to enable Private Service Connect for your VPC.
 subnetwork_cidr = "10.100.0.0/16"
 
-create_cluster     = true # Creates a GKE cluster in the specified network.
-cluster_name       = "<cluster-name>"
-cluster_location   = "us-central1"
-autopilot_cluster  = true
-private_cluster    = false
-kubernetes_version = "1.34"
+create_cluster    = true # Creates a GKE cluster in the specified network.
+cluster_name      = "<cluster-name>"
+cluster_location  = "us-central1"
+autopilot_cluster = true
+private_cluster   = false
 
 ## GKE environment variables
 kubernetes_namespace = "ai-on-gke"

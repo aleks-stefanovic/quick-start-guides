@@ -72,6 +72,25 @@ steps:
   allowFailure: true
   waitFor: ["validate platform", "validate rag"]
 
+- id: 'ensure artifact registry repo'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    set -e
+
+    # The repository persists between runs, so only the first build actually creates it.
+    if ! gcloud artifacts repositories describe rag-on-gke \
+         --location=us-central1 --project=$PROJECT_ID >/dev/null 2>&1; then
+      gcloud artifacts repositories create rag-on-gke \
+        --repository-format=docker \
+        --location=us-central1 \
+        --project=$PROJECT_ID \
+        --description="RAG quick-start frontend images built by CI"
+    fi
+  waitFor: ['-']
+
 - id: 'build frontend image'
   name: 'gcr.io/cloud-builders/docker'
   args:
@@ -79,7 +98,7 @@ steps:
   - '--platform'
   - 'linux/amd64'
   - '-t'
-  - 'gcr.io/$PROJECT_ID/rag-frontend:$SHORT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA'
   - '.'
   dir: '/workspace/rag/frontend/container'
   waitFor: ['clone common-infra']
@@ -88,8 +107,8 @@ steps:
   name: 'gcr.io/cloud-builders/docker'
   args:
   - 'push'
-  - 'gcr.io/$PROJECT_ID/rag-frontend:$SHORT_SHA'
-  waitFor: ['build frontend image']
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA'
+  waitFor: ['build frontend image', 'ensure artifact registry repo']
 
 # Resolve the pushed image to its immutable digest so the Deployment references
 # rag-frontend@sha256:... instead of a mutable tag. This keeps the imagedigest and
@@ -103,7 +122,7 @@ steps:
     set -e
 
     docker inspect --format='{{index .RepoDigests 0}}' \
-      gcr.io/$PROJECT_ID/rag-frontend:$SHORT_SHA > /workspace/frontend_image_digest.txt
+      us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA > /workspace/frontend_image_digest.txt
     cat /workspace/frontend_image_digest.txt
   waitFor: ['push frontend image']
 
