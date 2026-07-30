@@ -2,7 +2,9 @@
 
 This directory contains the source code and Dockerfile for the RAG frontend Flask web server.
 
-Before running `terraform apply`, you must push this image to your own Artifact Registry repository and set the `frontend_image` variable in `workloads.tfvars`.
+A prebuilt image is published and used by default, so you do not need to build anything to deploy
+the guide. Follow the steps below only if you want to run your own build of the frontend — for
+example after changing the application code.
 
 ## Prerequisites
 
@@ -35,13 +37,11 @@ gcloud builds submit \
 
 ## Set the image reference
 
-After pushing, update `workloads.tfvars`:
+After pushing, uncomment `frontend_image` in `workloads.tfvars` and point it at your image. Pin by
+digest rather than a tag, so the deployed image cannot change underneath you:
 
 ```hcl
-# Pin by digest so the deployed image cannot change underneath you:
 frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend@sha256:<DIGEST>"
-# A mutable tag also works for quick local testing, but is not recommended outside of it:
-# frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend:latest"
 ```
 
 To get the digest after pushing:

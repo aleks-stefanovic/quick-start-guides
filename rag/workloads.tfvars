@@ -14,24 +14,13 @@
 
 project_id = "<your project ID>"
 
-# RAG Frontend image — build and push before running terraform apply.
+# RAG Frontend image. Defaults to the published image, so nothing is required here to deploy.
 #
-# Option A — local Docker build (requires Docker):
-#   cd rag/frontend/container
-#   docker build --platform linux/amd64 -t rag-frontend:latest .
-#   docker tag rag-frontend:latest <REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend:latest
-#   docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend:latest
-#
-# Option B — Cloud Build:
-#   cd rag/frontend/container
-#   gcloud builds submit --tag <REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend:latest .
-#
-# Then set the full image reference. Pin by digest so the deployed image cannot change underneath
-# you; get it after pushing with:
+# To build and use your own instead, see rag/frontend/container/README.md, then uncomment the line
+# below and set it to the digest you pushed. Pinning by digest rather than a tag keeps the deployed
+# image from changing underneath you; get the digest after pushing with:
 #   docker inspect --format='{{index .RepoDigests 0}}' <IMAGE>
-frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend@sha256:<DIGEST>"
-# A mutable tag also works for quick local testing, but is not recommended outside of it:
-#   frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend:latest"
+# frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend@sha256:<DIGEST>"
 create_network  = true         # Creates a new VPC for your cluster. Disable to use an existing network.
 network_name    = "ml-network" # Creates a network named ml-network by default. If using an existing VPC, ensure you follow the README instructions to enable Private Service Connect for your VPC.
 subnetwork_cidr = "10.100.0.0/16"

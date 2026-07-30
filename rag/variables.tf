@@ -422,7 +422,8 @@ variable "disable_ray_cluster_network_policy" {
 
 variable "frontend_image" {
   type        = string
-  description = "Docker image for the RAG frontend. Build the image from rag/frontend/container/ and push it to your registry before running terraform apply."
+  description = "Docker image for the RAG frontend. Defaults to the published image; to use your own, build from rag/frontend/container/, push it to your registry, and set this to the pushed digest."
+  default     = "us-central1-docker.pkg.dev/ai-on-gke/rag-on-gke/frontend@sha256:b07942369e51bd3df6f919e3826c403ce5a6366bdae61c39e98e670d31844ced"
 }
 
 variable "create_network" {
