@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-project_id      = "<your project ID>"
+project_id = "<your project ID>"
+
+# RAG Frontend image. Defaults to the published image, so nothing is required here to deploy.
+#
+# To build and use your own instead, see rag/frontend/container/README.md, then uncomment the line
+# below and set it to the digest you pushed. Pinning by digest rather than a tag keeps the deployed
+# image from changing underneath you; get the digest after pushing with:
+#   docker inspect --format='{{index .RepoDigests 0}}' <IMAGE>
+# frontend_image = "<REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/rag-frontend@sha256:<DIGEST>"
 create_network  = true         # Creates a new VPC for your cluster. Disable to use an existing network.
 network_name    = "ml-network" # Creates a network named ml-network by default. If using an existing VPC, ensure you follow the README instructions to enable Private Service Connect for your VPC.
 subnetwork_cidr = "10.100.0.0/16"
