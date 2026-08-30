@@ -83,6 +83,8 @@ resource "kubernetes_service" "rag_frontend_service" {
 }
 
 resource "kubernetes_deployment" "rag_frontend_deployment" {
+  depends_on = [module.frontend-workload-identity]
+
   metadata {
     name      = "rag-frontend"
     namespace = var.namespace
@@ -92,7 +94,8 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
   }
 
   spec {
-    replicas = 3
+    replicas                  = 1
+    progress_deadline_seconds = 1800
     selector {
       match_labels = merge({
         app = "rag-frontend"
@@ -108,8 +111,15 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
 
       spec {
         service_account_name = var.google_service_account
+
+        security_context {
+          seccomp_profile {
+            type = "RuntimeDefault"
+          }
+        }
+
         container {
-          image = "us-central1-docker.pkg.dev/ai-on-gke/rag-on-gke/frontend@sha256:2b14a3a95f433cc394087ba0d6376d160d8080b62f485f1a119c52b8a6119368"
+          image = var.frontend_image
           name  = "rag-frontend"
 
           port {
@@ -120,6 +130,13 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
             name       = "secret-volume"
             mount_path = "/etc/secret-volume"
             read_only  = true
+          }
+
+          # Writable scratch for the read-only root filesystem. The HF cache (HF_HOME=/tmp/hf-cache)
+          # lives under this same volume, so its size is bounded by the limit below.
+          volume_mount {
+            name       = "tmp-dir"
+            mount_path = "/tmp"
           }
 
           env {
@@ -154,6 +171,15 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
               ephemeral-storage = "5Gi"
             }
           }
+
+          security_context {
+            allow_privilege_escalation = false
+            read_only_root_filesystem  = true
+            run_as_non_root            = true
+            capabilities {
+              drop = ["ALL"]
+            }
+          }
         }
 
         volume {
@@ -163,8 +189,22 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
           name = "secret-volume"
         }
 
+        volume {
+          name = "tmp-dir"
+          empty_dir {
+            # Bounds scratch + the downloaded embedding model (intfloat/multilingual-e5-small,
+            # ~500Mi) so a pod cannot fill the node's disk.
+            size_limit = "2Gi"
+          }
+        }
+
+        volume {
+          name = "cloudsql-tmp"
+          empty_dir {}
+        }
+
         container {
-          image = "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0"
+          image = "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0@sha256:9c84401d9c31d18809b02155e74920d0434a7d8780d2b63b8de7a690fea6f1bf"
           name  = "cloud-sql-proxy"
 
           args = [
@@ -172,8 +212,18 @@ resource "kubernetes_deployment" "rag_frontend_deployment" {
             local.instance_connection_name,
           ]
 
+          volume_mount {
+            name       = "cloudsql-tmp"
+            mount_path = "/tmp"
+          }
+
           security_context {
-            run_as_non_root = true
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+            read_only_root_filesystem  = true
+            capabilities {
+              drop = ["ALL"]
+            }
           }
 
           resources {

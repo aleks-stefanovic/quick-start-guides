@@ -126,7 +126,7 @@ steps:
   env:
     - "CLOUDSDK_COMPUTE_ZONE=${_REGION}"
     - "CLOUDSDK_CONTAINER_CLUSTER=ml-${SHORT_SHA}-${_PR_NUMBER}-${_BUILD_ID}-cluster"
-  entrypoint: 'sh'
+  entrypoint: 'bash'
   args:
   - '-c'
   - |
@@ -203,7 +203,7 @@ steps:
   env:
   - "CLOUDSDK_COMPUTE_ZONE=${_REGION}"
   - "CLOUDSDK_CONTAINER_CLUSTER=ml-${SHORT_SHA}-${_PR_NUMBER}-${_BUILD_ID}-cluster"
-  entrypoint: 'sh'
+  entrypoint: 'bash'
   args:
   - '-c'
   - |
@@ -222,6 +222,10 @@ steps:
     pip install pyyaml requests packaging
 
     cd /workspace/common/modules/jupyter/tests
+    # Patch: Tornado 6.4 (JupyterHub chart 3.3.8) intermittently rejects _xsrf sent as a URL
+    # query param. Move it into the POST body instead, which is the stable supported path.
+    sed -i '/params=auth_params,/d' test_hub.py
+    sed -i 's/data={"username": username, "password": password},/data={"username": username, "password": password, **auth_params},/' test_hub.py
     python3 test_hub.py "127.0.0.1:9442" $_AUTOPILOT_CLUSTER
     echo "pass" > /workspace/jupyterhub_test_result.txt
   allowFailure: true
@@ -248,6 +252,83 @@ steps:
   allowFailure: true
   waitFor: ['test jupyterhub']
 
+- id: 'grant node pool gcr access'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    gcloud container node-pools list \
+      --cluster=ml-$SHORT_SHA-$_PR_NUMBER-$_BUILD_ID-cluster \
+      --region=$_REGION \
+      --project=$PROJECT_ID \
+      --format="value(config.serviceAccount)" | sort -u | while read sa; do
+        echo "Granting artifactregistry.reader on the rag-on-gke repository to $sa"
+        # Scoped to the single repository holding the frontend image rather than the whole
+        # project, so the node pool can pull that image and nothing else.
+        gcloud artifacts repositories add-iam-policy-binding rag-on-gke \
+          --location=us-central1 \
+          --project=$PROJECT_ID \
+          --member="serviceAccount:${sa}" \
+          --role="roles/artifactregistry.reader"
+    done
+  allowFailure: false
+  waitFor: ['create gke cluster']
+
+- id: 'ensure artifact registry repo'
+  name: 'gcr.io/cloud-builders/gcloud'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    set -e
+
+    # The repository persists between runs, so only the first build actually creates it.
+    if ! gcloud artifacts repositories describe rag-on-gke \
+         --location=us-central1 --project=$PROJECT_ID >/dev/null 2>&1; then
+      gcloud artifacts repositories create rag-on-gke \
+        --repository-format=docker \
+        --location=us-central1 \
+        --project=$PROJECT_ID \
+        --description="RAG quick-start frontend images built by CI"
+    fi
+  waitFor: ['-']
+
+- id: 'build frontend image'
+  name: 'gcr.io/cloud-builders/docker'
+  args:
+  - 'build'
+  - '--platform'
+  - 'linux/amd64'
+  - '-t'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA'
+  - '.'
+  dir: '/workspace/rag/frontend/container'
+  waitFor: ['clone common-infra']
+
+- id: 'push frontend image'
+  name: 'gcr.io/cloud-builders/docker'
+  args:
+  - 'push'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA'
+  waitFor: ['build frontend image', 'ensure artifact registry repo']
+
+# Resolve the pushed image to its immutable digest so the Deployment references
+# rag-frontend@sha256:... instead of a mutable tag. This keeps the imagedigest and
+# imagefreshness policies satisfied without needing allowlist entries.
+- id: 'get frontend image digest'
+  name: 'gcr.io/cloud-builders/docker'
+  entrypoint: 'bash'
+  args:
+  - '-c'
+  - |
+    set -e
+
+    docker inspect --format='{{index .RepoDigests 0}}' \
+      us-central1-docker.pkg.dev/$PROJECT_ID/rag-on-gke/rag-frontend:$SHORT_SHA > /workspace/frontend_image_digest.txt
+    cat /workspace/frontend_image_digest.txt
+  waitFor: ['push frontend image']
+
 - id: 'create rag'
   name: "hashicorp/terraform:latest"
   secretEnv: ['KAGGLE_USERNAME', 'KAGGLE_KEY']
@@ -272,6 +353,12 @@ steps:
     deactivate
 
     cd /workspace/rag/
+    # Increase Ray head ephemeral storage from 3Gi to 10Gi so runtime_env pip installs
+    # (torch, transformers, etc.) don't evict the head pod on standard clusters.
+    sed -i 's/ephemeral-storage: 3Gi/ephemeral-storage: 10Gi/g' \
+      /workspace/rag/.terraform/modules/kuberay-cluster/common/modules/kuberay-cluster/values.yaml
+    sed -i 's/gke-gcsfuse\/ephemeral-storage-limit: 3Gi/gke-gcsfuse\/ephemeral-storage-limit: 5Gi/' \
+      /workspace/rag/.terraform/modules/kuberay-cluster/common/modules/kuberay-cluster/values.yaml
     terraform apply \
     -var-file=workloads.tfvars \
     -var=network_name=ml-$SHORT_SHA-$_PR_NUMBER-$_BUILD_ID-$_AUTOPILOT_CLUSTER  \
@@ -287,15 +374,16 @@ steps:
     -var=rag_service_account=rag-sa-4-rag-$SHORT_SHA-$_BUILD_ID \
     -var=jupyter_service_account=jupyter-sa-4-rag-$SHORT_SHA-$_BUILD_ID \
     -var=cloudsql_instance=pgvector-instance-$SHORT_SHA-$_BUILD_ID \
+    -var=frontend_image=$$(cat /workspace/frontend_image_digest.txt) \
     -auto-approve -no-color
     echo "pass" > /workspace/rag_tf_result.txt
   allowFailure: true
-  waitFor: ['create gke cluster']
+  waitFor: ['create gke cluster', 'get frontend image digest', 'grant node pool gcr access']
 
 - id: 'test rag'
   name: "gcr.io/cloud-builders/kubectl"
   secretEnv: ['KAGGLE_USERNAME', 'KAGGLE_KEY']
-  entrypoint: 'sh'
+  entrypoint: 'bash'
   args:
   - '-c'
   - |
@@ -319,6 +407,19 @@ steps:
     --address=http://127.0.0.1:8262 -- python -c "import ray; ray.init(); print(ray.cluster_resources())"
     echo "pass" > /workspace/rag_ray_dashboard_result.txt
 
+    # Trigger GPU worker autoscaling in background so it is ready by the time the notebook runs.
+    # The KubeRay cluster starts with 0 GPU workers (minReplicas=0); the first GPU request causes
+    # autoscaler to cold-start a worker pod which can take 10-15 min (image pull + Ray init).
+    # Running this concurrently with the JupyterHub / frontend checks saves that wall-clock time.
+    # Note: heredoc cannot be used here because unindented content breaks YAML block scalar parsing.
+    echo "import ray" > /tmp/gpu_warmup.py
+    echo "ray.init()" >> /tmp/gpu_warmup.py
+    echo "def warmup(): return True" >> /tmp/gpu_warmup.py
+    echo "warmup_r = ray.remote(num_gpus=1)(warmup)" >> /tmp/gpu_warmup.py
+    echo "print('GPU worker ready:', ray.get(warmup_r.remote()))" >> /tmp/gpu_warmup.py
+    ray job submit --working-dir /tmp --address=http://127.0.0.1:8262 -- python gpu_warmup.py &
+    GPU_WARMUP_PID=$$!
+
     # Validate JupyterHub: Get hub url
     kubectl get services -n rag-$SHORT_SHA-$_BUILD_ID
     kubectl port-forward -n rag-$SHORT_SHA-$_BUILD_ID service/proxy-public 9443:80 &
@@ -328,6 +429,9 @@ steps:
     # Validate JupyterHub: Test Hub
     cd /workspace/common/modules/jupyter/tests
     kubectl -n rag-$SHORT_SHA-$_BUILD_ID get secrets hub -o=jsonpath='{.data.values\.yaml}' | base64 -d > /workspace/common/modules/jupyter/jupyter_config/config-selfauth.yaml
+    # Same Tornado 6.4 XSRF patch as in step 11 (idempotent if already applied)
+    sed -i '/params=auth_params,/d' test_hub.py
+    sed -i 's/data={"username": username, "password": password},/data={"username": username, "password": password, **auth_params},/' test_hub.py
     python3 test_hub.py "127.0.0.1:9443" $_AUTOPILOT_CLUSTER
     echo "pass" > /workspace/rag_jupyterhub_test_result.txt
 
@@ -340,16 +444,25 @@ steps:
     python3 test_frontend.py "127.0.0.1:8081"
     echo "pass" > /workspace/rag_frontend_result.txt
 
+    # Wait for the GPU worker warm-up job to finish before running the notebook.
+    # Capture the status via || so the step's `set -e` doesn't abort here: a failed warm-up is a
+    # warning, not a failure, since the notebook can still trigger autoscaling itself (just slower).
+    WARMUP_STATUS=0
+    wait $$GPU_WARMUP_PID || WARMUP_STATUS=$$?
+    if [ $$WARMUP_STATUS -ne 0 ]; then
+      echo "WARNING: GPU warm-up failed with status $$WARMUP_STATUS, notebook may be slow or fail"
+    fi
+
     cd /workspace/
     sed -i "s/<username>/$$KAGGLE_USERNAME/g" ./rag/example_notebooks/rag-kaggle-ray-sql-interactive.ipynb
     sed -i "s/<token>/$$KAGGLE_KEY/g" ./rag/example_notebooks/rag-kaggle-ray-sql-interactive.ipynb
     gcloud storage cp ./rag/example_notebooks/rag-kaggle-ray-sql-interactive.ipynb gs://gke-aieco-rag-$SHORT_SHA-$_BUILD_ID/
-    kubectl exec -it -n rag-$SHORT_SHA-$_BUILD_ID $(kubectl get pod -l app=jupyterhub,component=hub -n rag-$SHORT_SHA-$_BUILD_ID -o jsonpath="{.items[0].metadata.name}") -- jupyterhub token admin --log-level=CRITICAL | xargs python3 ./rag/notebook_starter.py
+    kubectl exec -i -n rag-$SHORT_SHA-$_BUILD_ID $(kubectl get pod -l app=jupyterhub,component=hub -n rag-$SHORT_SHA-$_BUILD_ID -o jsonpath="{.items[0].metadata.name}") -- jupyterhub token admin --log-level=CRITICAL | xargs python3 ./rag/notebook_starter.py
     # Wait for jupyterhub to trigger notebook pod startup
     sleep 5s
     kubectl wait --for=condition=Ready pod/jupyter-admin -n rag-$SHORT_SHA-$_BUILD_ID --timeout=500s
-    kubectl exec -it -n rag-$SHORT_SHA-$_BUILD_ID jupyter-admin -c notebook -- jupyter nbconvert --to script /data/rag-kaggle-ray-sql-interactive.ipynb
-    kubectl exec -it -n rag-$SHORT_SHA-$_BUILD_ID jupyter-admin -c notebook -- ipython /data/rag-kaggle-ray-sql-interactive.py
+    kubectl exec -i -n rag-$SHORT_SHA-$_BUILD_ID jupyter-admin -c notebook -- jupyter nbconvert --to script /data/rag-kaggle-ray-sql-interactive.ipynb
+    kubectl exec -i -n rag-$SHORT_SHA-$_BUILD_ID jupyter-admin -c notebook -- ipython /data/rag-kaggle-ray-sql-interactive.py
 
     python3 ./rag/tests/test_rag.py "http://127.0.0.1:8081/prompt"
     echo "pass" > /workspace/rag_prompt_result.txt
