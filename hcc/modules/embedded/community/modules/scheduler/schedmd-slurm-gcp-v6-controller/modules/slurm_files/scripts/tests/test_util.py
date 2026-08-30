@@ -17,6 +17,7 @@ from typing import Optional, Type
 import pytest
 from mock import Mock
 from datetime import datetime, timezone, timedelta
+import json
 import unittest
 
 from common import TstNodeset, TstCfg # needed to import util
@@ -405,6 +406,63 @@ def test_node_state(node: str, state: Optional[NodeState], want: NodeState | Non
     ])
 def test_MachineType_from_json(jo: dict, want: MachineType):
     assert MachineType.from_json(jo) == want
+
+
+A100 = MachineType(
+    name="a2-highgpu-1g",
+    guest_cpus=12,
+    memory_mb=87040,
+    accelerators=[AcceleratorInfo(type="nvidia-tesla-a100", count=1)],
+)
+T2D = MachineType(
+    name="t2d-standard-8", guest_cpus=8, memory_mb=32768, accelerators=[]
+)
+
+@pytest.mark.parametrize("mt", [A100, T2D])
+def test_MachineType_to_json(mt: MachineType):
+    assert MachineType.from_json(json.loads(json.dumps(mt.to_json()))) == mt
+
+
+@pytest.mark.parametrize(
+    "machine_type,gpu",
+    [
+        (A100, A100.accelerators[0]),
+        (T2D, None),
+    ])
+def test_template_json_roundtrip(machine_type: MachineType, gpu):
+    template = util.NSDict({
+        "name": "tpl",
+        "machineType": machine_type.name,
+        "advancedMachineFeatures": {"threadsPerCore": 1},
+        "disks": [{"initializeParams": {"diskType": "pd-ssd"}}],
+    })
+    template.machine_type = machine_type
+    template.gpu = gpu
+
+    jo = json.loads(json.dumps(util._template_to_json(template)))
+    got = util._template_from_json(jo)
+
+    assert got.machine_type == machine_type
+    assert got.gpu == gpu
+    assert got.to_dict() == template.to_dict()
+
+
+def test_json_cache(tmp_path):
+    path = tmp_path / "cache.json"
+
+    with util.json_cache(path) as cache:
+        assert cache == {}
+        cache["dropped"] = 1
+    assert not path.exists()
+
+    with util.json_cache(path, writeback=True) as cache:
+        cache["kept"] = {"n": 1}
+    assert json.loads(path.read_text()) == {"kept": {"n": 1}}
+
+    path.write_text("not json")
+    with util.json_cache(path) as cache:
+        assert cache == {}
+
 
 UTC, PST = timezone.utc, timezone(timedelta(hours=-8))
 
