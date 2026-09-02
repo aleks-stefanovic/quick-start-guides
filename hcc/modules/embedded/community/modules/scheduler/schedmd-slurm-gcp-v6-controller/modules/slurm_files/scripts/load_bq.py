@@ -261,7 +261,11 @@ def purge_job_idx_cache():
     with json_cache(job_idx_cache_path, writeback=True) as cache:
         to_delete = []
         for idx, stamp in cache.items():
-            if datetime.fromisoformat(stamp) < purge_time:
+            try:
+                expired = datetime.fromisoformat(stamp) < purge_time
+            except (TypeError, ValueError):
+                expired = True
+            if expired:
                 to_delete.append(idx)
         for idx in to_delete:
             del cache[idx]

@@ -18,6 +18,8 @@ import pytest
 from mock import Mock
 from datetime import datetime, timezone, timedelta
 import json
+import threading
+import time
 import unittest
 
 from common import TstNodeset, TstCfg # needed to import util
@@ -462,6 +464,63 @@ def test_json_cache(tmp_path):
     path.write_text("not json")
     with util.json_cache(path) as cache:
         assert cache == {}
+
+
+def test_json_cache_not_written_when_body_raises(tmp_path):
+    path = tmp_path / "cache.json"
+    with util.json_cache(path, writeback=True) as cache:
+        cache["before"] = 1
+
+    with pytest.raises(ValueError):
+        with util.json_cache(path, writeback=True) as cache:
+            cache["after"] = 2
+            raise ValueError("boom")
+
+    assert json.loads(path.read_text()) == {"before": 1}
+
+
+def test_json_cache_serializes_concurrent_writers(tmp_path):
+    path = tmp_path / "cache.json"
+    started = threading.Event()
+
+    def writer(key, hold):
+        with util.json_cache(path, writeback=True) as cache:
+            started.set()
+            time.sleep(hold)
+            cache[key] = 1
+
+    slow = threading.Thread(target=writer, args=("A", 0.3))
+    slow.start()
+    assert started.wait(2), "first writer never entered the cache"
+    fast = threading.Thread(target=writer, args=("B", 0))
+    fast.start()
+    slow.join(5)
+    fast.join(5)
+
+    assert json.loads(path.read_text()) == {"A": 1, "B": 1}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "tpl"},                      # no machine_type
+        {"machine_type": {"name": "n"}},      # machine_type missing fields
+        {"machine_type": None},
+        "a string, not an object",
+    ])
+def test_template_info_ignores_malformed_cache_entry(tmp_path, entry):
+    lkp = util.Lookup(util.NSDict({"project": "proj"}))
+    lkp.template_cache_path = tmp_path / "template_info.cache.json"
+    lkp.template_cache_path.write_text(json.dumps({"tpl": entry}))
+
+    properties = {"machineType": "custom-4-8192", "advancedMachineFeatures": {}}
+    with unittest.mock.patch.object(util, "ensure_execute", return_value={"properties": properties}), \
+         unittest.mock.patch.object(util, "chown_slurm"), \
+         unittest.mock.patch.object(util.Lookup, "compute", unittest.mock.MagicMock()):
+        got = lkp.template_info("projects/proj/global/instanceTemplates/tpl")
+
+    assert got.machine_type.guest_cpus == 4
+    assert json.loads(lkp.template_cache_path.read_text())["tpl"]["machine_type"]["guestCpus"] == 4
 
 
 UTC, PST = timezone.utc, timezone(timedelta(hours=-8))

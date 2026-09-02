@@ -19,6 +19,7 @@ import argparse
 import base64
 from dataclasses import dataclass, field
 from datetime import timedelta, datetime, timezone
+import fcntl
 import hashlib
 import inspect
 import json
@@ -826,28 +827,36 @@ def chown_slurm(path: Path, mode=None) -> None:
 def json_cache(path: Path, writeback: bool = False):
     """Yield the dict stored in a JSON cache file.
 
-    A missing or unreadable file yields an empty cache. With writeback the
-    result is persisted through a temporary file, so readers only ever see a
-    complete cache.
+    A missing or unreadable file yields an empty cache. The context holds a
+    lock on a sidecar file for its whole duration, shared for reads and
+    exclusive for writeback, so concurrent read-modify-write cycles cannot
+    drop each other's entries. Writeback goes through a temporary file so
+    readers never observe a partial cache, and nothing is written back if the
+    body raises.
     """
+    lock_fd = os.open(f"{path}.lock", os.O_RDONLY | os.O_CREAT, 0o644)
     try:
-        cache = json.loads(path.read_text())
-    except (OSError, ValueError):
-        cache = {}
+        fcntl.flock(lock_fd, fcntl.LOCK_EX if writeback else fcntl.LOCK_SH)
+        try:
+            cache = json.loads(path.read_text())
+        except (OSError, ValueError):
+            cache = {}
 
-    yield cache
+        yield cache
 
-    if not writeback:
-        return
-    tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False)
-    try:
-        with tmp:
-            json.dump(cache, tmp)
-        os.chmod(tmp.name, 0o644)
-        os.replace(tmp.name, path)
-    except BaseException:
-        Path(tmp.name).unlink(missing_ok=True)
-        raise
+        if not writeback:
+            return
+        tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False)
+        try:
+            with tmp:
+                json.dump(cache, tmp)
+            os.chmod(tmp.name, 0o644)
+            os.replace(tmp.name, path)
+        except BaseException:
+            Path(tmp.name).unlink(missing_ok=True)
+            raise
+    finally:
+        os.close(lock_fd)
 
 
 @contextmanager
@@ -1849,7 +1858,10 @@ class Lookup:
         template_name = trim_self_link(template_link)
         with json_cache(self.template_cache_path) as cache:
             if template_name in cache:
-                return _template_from_json(cache[template_name])
+                try:
+                    return _template_from_json(cache[template_name])
+                except (AttributeError, KeyError, TypeError, ValueError) as e:
+                    log.warning(f"Ignoring malformed template cache entry for {template_name}: {e}")
 
         template = ensure_execute(
             self.compute.instanceTemplates().get(
